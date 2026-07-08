@@ -1,6 +1,6 @@
 {
   "id": "dev.dose.steam",
-  "name": "Steam Games",
+  "name": "Steam",
   "version": "1.0.0",
   "description": "Indexes installed Steam games in the background and launches them from the Asyar search via steam://run.",
   "author": "dose.dev",

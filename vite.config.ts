@@ -41,7 +41,7 @@ if (existsSync(resolve(__dirname, 'worker.html'))) {
 
 export default defineConfig(() => {
   console.log(
-    `\x1b[36m[Vite] (Steam Games)\x1b[0m Asyar-SDK: \x1b[33m${
+    `\x1b[36m[Vite] (Steam)\x1b[0m Asyar-SDK: \x1b[33m${
       useLocalSdk ? `Local Source (${sdkSrcDir})` : 'node_modules (NPM)'
     }\x1b[0m`,
   );

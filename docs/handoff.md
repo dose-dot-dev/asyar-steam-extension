@@ -1,4 +1,4 @@
-# Handoff — Steam Games extension for Asyar
+# Handoff — Steam extension for Asyar
 
 Warm-start notes for a fresh session. This captures the current state, architecture, and the
 hard-won platform gotchas so you don't have to re-derive them.

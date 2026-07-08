@@ -1,5 +1,5 @@
 // ───────────────────────────────────────────────────────────────────────────
-// worker.ts — Tier 2 worker entry for the "Steam Games" extension.
+// worker.ts — Tier 2 worker entry for the "Steam" extension.
 //
 // Each installed game is registered as a **dynamic command** (via
 // `commandsService.replaceDynamicCommands`) so it appears in the main search
@@ -201,7 +201,7 @@ class SteamGamesExtension implements Extension {
       const changed = games.length !== previous;
       if (this.notifications && (force || (changed && this.notifyPref()))) {
         await this.notifications.send({
-          title: 'Steam Games',
+          title: 'Steam',
           body: `Indexed ${games.length} installed game${games.length === 1 ? '' : 's'}.`,
         });
       }

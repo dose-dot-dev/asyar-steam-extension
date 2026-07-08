@@ -1,5 +1,5 @@
 // ───────────────────────────────────────────────────────────────────────────
-// indexer-core.ts — Steam library discovery for the Asyar "Steam Games"
+// indexer-core.ts — Steam library discovery for the Asyar "Steam"
 // extension.
 //
 // Tier 2 extensions run in a sandboxed iframe that CANNOT touch

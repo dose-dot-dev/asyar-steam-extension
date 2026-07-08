@@ -1,4 +1,4 @@
-# Steam Games
+# Steam
 
 An [Asyar](https://github.com/Xoshbin/asyar) extension that indexes your
 installed Steam games in the background and makes them launchable straight from
