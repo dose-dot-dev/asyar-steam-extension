@@ -13,31 +13,30 @@ the Asyar search (via `steam://run/<appid>`).
   **main search** like any built-in command — type a name, press Enter, the game
   launches through Steam (no view, and no "Extension Search" toggle required).
 - Indexing runs automatically on a schedule (default **every 8 hours**) and once
-  on startup (only when the cache is stale). Each run is a single PowerShell call;
-  a fingerprint of the resulting game set decides whether anything actually
-  changed before re-registering.
+  on startup (only when the cache is stale); a fingerprint of the resulting game
+  set decides whether anything actually changed before re-registering.
+- Game rows show their **real Steam artwork** (the client icon from Steam's
+  `librarycache`, served through the launcher's thumbnail cache).
 - A manual **"Reindex Steam Games"** command forces an immediate rescan — handy
   right after installing a new game.
 
 ## How it reads and launches (Windows)
 
-Tier 2 extensions are sandboxed (no `@tauri-apps/api`). Both the crawl and the
-launch are **dual-mode**: on launchers with the newer capabilities the extension
-uses them natively, and on older launchers it falls back to a single trusted
-`powershell.exe`:
+Tier 2 extensions are sandboxed (no `@tauri-apps/api`); everything goes through
+launcher-mediated, permission-gated capabilities — no shell access at all:
 
-- **Read:** bounded `files:read` scoped to the manifest's
-  `steamapps/libraryfolders.vdf` / `appmanifest_*.acf` globs when the launcher
-  supports it ([asyar#448](https://github.com/Xoshbin/asyar/issues/448));
-  otherwise one hidden PowerShell call (`Get-Content -Encoding UTF8`) parses
-  the same files.
-- **Launch:** the Asyar opener with a declared `steam` scheme allowlist when
-  supported ([asyar#449](https://github.com/Xoshbin/asyar/issues/449));
-  otherwise `Start-Process 'steam://run/<appid>'` (hidden, exits 0, reuses the
-  already-trusted `powershell.exe`).
+- **Read:** bounded `files:read` / `files:glob` scoped to the manifest's
+  `steamapps/libraryfolders.vdf` / `appmanifest_*.acf` / `librarycache` globs
+  ([asyar#456](https://github.com/Xoshbin/asyar/pull/456),
+  [asyar#460](https://github.com/Xoshbin/asyar/pull/460)).
+- **Icons:** `files:thumbnail` turns each game's client icon into a cached
+  `asyar-thumb://` URL ([asyar#460](https://github.com/Xoshbin/asyar/pull/460)).
+- **Launch:** the Asyar opener with a declared `steam` scheme allowlist
+  ([asyar#457](https://github.com/Xoshbin/asyar/pull/457)).
 
-On the PowerShell fallback, Asyar prompts you **once** to trust
-`powershell.exe`; after that, reindexing and launching are silent.
+**Requires a launcher newer than v0.1.1-34** (the first release containing the
+capabilities above). Until you approve the extension's permission review, it
+fails closed: nothing is read and nothing is indexed.
 
 Steam location is auto-detected at `C:\Program Files (x86)\Steam`; override it in
 the extension's settings if yours is elsewhere.
@@ -61,8 +60,8 @@ Settings → Extensions) to reload after a build.
 
 | File | Purpose |
 |---|---|
-| `manifest.json` | `background.main` worker; `reindex` command with an 8h `schedule`; `shell:spawn` (read + launch) / `storage` / `notifications` permissions; `steamPath` / `hideTools` / `notifyOnReindex` preferences. |
-| `src/indexer-core.ts` | Pure parsers (`parseLibraryPaths`, `parseAppManifest`, `gamesFromManifests`, `fingerprintGames`) + the single-spawn `crawlSteam` shell IO. |
+| `manifest.json` | `background.main` worker; `reindex` command with an 8h `schedule`; `files:read` (with scoped globs) / `shell:open-url` (`steam` scheme) / `storage` / `notifications` permissions; `steamPath` / `hideTools` / `notifyOnReindex` preferences. |
+| `src/indexer-core.ts` | Pure parsers (`parseLibraryApps`, `parseAppManifest`, `gamesFromManifests`, `fingerprintGames`) + capability-injected IO (`crawlSteamViaRead`, `launchGameViaOpener`, `iconGlobPatterns`). |
 | `src/worker.ts` | The `Extension` implementation: registers one dynamic command per game (`replaceDynamicCommands`), routes `executeCommand` (`reindex` + `game-<appid>` launch), scheduled/manual reindex, storage cache, and the worker bootstrap. |
 | `src/indexer-core.test.ts` | Vitest unit tests for the parsers using real VDF/ACF fixtures. |
 

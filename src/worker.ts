@@ -21,16 +21,13 @@ import type {
   IFilesService,
   ILogService,
   INotificationService,
-  IShellService,
   IStorageService,
 } from 'asyar-sdk/contracts';
 
 import manifest from '../manifest.json';
 import {
-  crawlSteam,
   crawlSteamViaRead,
   iconGlobPatterns,
-  launchGame,
   launchGameViaOpener,
   steamVdfPath,
   type CrawlResult,
@@ -42,13 +39,13 @@ type WireInvoke = <T>(command: string, payload?: Record<string, unknown>) => Pro
 
 const STORE_KEY = 'steam-index';
 const GAME_CMD_PREFIX = 'game-';
-/** Row icon when no artwork is available (older launcher, missing art). */
+/** Row icon when no artwork is available (consent pending, missing art). */
 const FALLBACK_ICON = '🎮';
 /** Source icons are 32×32 and the thumbnail pipeline never upscales; 64
  * leaves headroom for future larger art without re-requesting. */
 const ICON_MAX_DIM = 64;
-// Skip the startup refresh (and its one PowerShell call) when the cache was
-// updated this recently — avoids a scan every time Asyar restarts.
+// Skip the startup refresh when the cache was updated this recently —
+// avoids a scan every time Asyar restarts.
 const STARTUP_REFRESH_MS = 60 * 60 * 1000; // 1 hour
 
 interface CacheShape {
@@ -62,7 +59,6 @@ class SteamGamesExtension implements Extension {
   private log?: ILogService;
   private notifications?: INotificationService;
   private storage?: IStorageService;
-  private shell?: IShellService;
   private commands?: ICommandService;
 
   private games: SteamGame[] = [];
@@ -71,29 +67,25 @@ class SteamGamesExtension implements Extension {
   private indexing = false;
 
   /** Raw broker access for wire calls the bundled SDK (4.0.0) has no typed
-   * proxy for yet: `files:read` (asyar#448), `opener:open` behind the
-   * declared-scheme gate (asyar#449), and `files:glob`/`files:thumbnail`
+   * proxy for yet: `files:read` (asyar#456), `opener:open` behind the
+   * declared-scheme gate (asyar#457), and `files:glob`/`files:thumbnail`
    * (asyar#460). TODO: switch to typed SDK calls once asyar-sdk ships them. */
   private invokeWire?: WireInvoke;
-  /** True once a probe proved this launcher supports the scoped `files:read`
-   * (and therefore the scheme-gated opener that ships with it). */
-  private newCapsAvailable = false;
-  /** True once a probe proved `files:glob`/`files:thumbnail` (asyar#460). */
-  private thumbsAvailable = false;
+  /** True once a probe proved the file capabilities are usable — i.e. the
+   * launcher is new enough AND the user consented to the file permissions. */
+  private capsAvailable = false;
 
   async initialize(ctx: ExtensionContext): Promise<void> {
     this.ctx = ctx;
     this.log = ctx.getService<ILogService>('log');
     this.notifications = ctx.getService<INotificationService>('notifications');
     this.storage = ctx.getService<IStorageService>('storage');
-    this.shell = ctx.getService<IShellService>('shell');
     this.commands = ctx.getService<ICommandService>('commands');
 
     const files = ctx.getService<IFilesService>('files');
     const broker = (files as unknown as { broker?: { invoke: WireInvoke } })?.broker;
     if (broker) this.invokeWire = broker.invoke.bind(broker) as WireInvoke;
-    await this.probeNewCapabilities();
-    await this.probeThumbnails();
+    await this.probeCapabilities();
 
     await this.loadCache();
     // All setup happens here: the SDK bridge calls initialize() but never
@@ -128,42 +120,29 @@ class SteamGamesExtension implements Extension {
 
   // ── internals ──────────────────────────────────────────────────────────
 
-  /** One `files:read` of the vdf decides which mode this launcher runs in.
-   * On pre-#448 launchers the call resolves to a non-string (unknown wire
-   * type dispatches to a missing service method) or the opener path would
-   * silently no-op — so both new capabilities are gated on this one probe. */
-  private async probeNewCapabilities(): Promise<void> {
-    if (!this.invokeWire) return;
-    try {
-      await this.readTextFile(steamVdfPath({ steamPath: this.steamPathPref() }));
-      this.newCapsAvailable = true;
-      this.log?.info('steamgames: files:read available — using scoped reads + opener launches');
-    } catch (e) {
-      this.log?.info(
-        `steamgames: files:read unavailable (${String(e)}) — using PowerShell paths`,
-      );
-    }
-  }
-
-  /** One `files:glob` for the vdf's literal path proves both asyar#460
-   * commands exist (they ship together). A missing Steam root still resolves
-   * to `[]` — an array either way. Pre-#460 launchers dispatch the unknown
-   * wire type to a missing service method and resolve `undefined`. */
-  private async probeThumbnails(): Promise<void> {
+  /** One `files:glob` for the vdf's literal path proves everything this
+   * extension needs: `files:glob`/`files:thumbnail` (asyar#460) postdate
+   * scoped `files:read` (asyar#456) and the scheme-gated opener (asyar#457),
+   * and the call only succeeds once the user consented to the file
+   * permissions. A missing Steam root still resolves to `[]` — an array
+   * either way. Too-old launchers dispatch the unknown wire type to a
+   * missing service method and resolve `undefined`; a pending/denied consent
+   * rejects. Reindex re-probes on failure — consent can arrive late. */
+  private async probeCapabilities(): Promise<void> {
     if (!this.invokeWire) return;
     try {
       const res = await this.invokeWire<unknown>('files:glob', {
         pattern: steamVdfPath({ steamPath: this.steamPathPref() }),
         opts: {},
       });
-      this.thumbsAvailable = Array.isArray(res);
+      this.capsAvailable = Array.isArray(res);
     } catch {
-      this.thumbsAvailable = false;
+      this.capsAvailable = false;
     }
     this.log?.info(
-      this.thumbsAvailable
-        ? 'steamgames: files:glob/thumbnail available — using real game artwork'
-        : 'steamgames: files:glob/thumbnail unavailable — using fallback icon',
+      this.capsAvailable
+        ? 'steamgames: file capabilities available — indexing with real game artwork'
+        : 'steamgames: file capabilities unavailable (launcher too old, or consent pending) — indexing paused',
     );
   }
 
@@ -173,7 +152,7 @@ class SteamGamesExtension implements Extension {
    * evicts oldest-first, so URLs are re-requested at every registration and
    * NEVER persisted. Any failure falls back to the generic icon. */
   private async gameIcon(appid: string): Promise<string> {
-    if (!this.thumbsAvailable || !this.invokeWire) return FALLBACK_ICON;
+    if (!this.capsAvailable || !this.invokeWire) return FALLBACK_ICON;
     try {
       for (const pattern of iconGlobPatterns(appid, { steamPath: this.steamPathPref() })) {
         const hits = await this.invokeWire<unknown>('files:glob', { pattern, opts: {} });
@@ -205,17 +184,14 @@ class SteamGamesExtension implements Extension {
     await this.invokeWire('opener:open', { url });
   }
 
+  /** Launch through the scheme-gated opener. Not gated on the file-caps
+   * probe: the opener needs only the declared `steam` scheme, so cached
+   * games stay launchable even while file consent is pending. */
   private async launch(appid: string): Promise<void> {
     if (!appid) return;
     try {
-      if (this.newCapsAvailable) {
-        await launchGameViaOpener((u) => this.openUrl(u), appid);
-        this.log?.info(`steamgames: launched steam://run/${appid} via opener`);
-        return;
-      }
-      if (!this.shell) return;
-      await launchGame(this.shell, appid);
-      this.log?.info(`steamgames: launched steam://run/${appid}`);
+      await launchGameViaOpener((u) => this.openUrl(u), appid);
+      this.log?.info(`steamgames: launched steam://run/${appid} via opener`);
     } catch (e) {
       this.log?.error(`steamgames: launch failed for ${appid}: ${String(e)}`);
     }
@@ -228,12 +204,12 @@ class SteamGamesExtension implements Extension {
    */
   private async reindex(force: boolean): Promise<void> {
     if (this.indexing) return;
-    // Re-probe when a startup probe failed: consent may have been granted
-    // since (the launcher withholds files:read until the user approves the
-    // permission review), and a reindex is the natural moment to notice.
-    if (!this.newCapsAvailable) await this.probeNewCapabilities();
-    if (!this.thumbsAvailable) await this.probeThumbnails();
-    if (!this.newCapsAvailable && !this.shell) return;
+    // Re-probe when the startup probe failed: consent may have been granted
+    // since (the launcher withholds the file capabilities until the user
+    // approves the permission review), and a reindex is the natural moment
+    // to notice.
+    if (!this.capsAvailable) await this.probeCapabilities();
+    if (!this.capsAvailable) return;
     this.indexing = true;
     try {
       const opts = { steamPath: this.steamPathPref(), hideTools: this.hideToolsPref() };
@@ -270,21 +246,18 @@ class SteamGamesExtension implements Extension {
     }
   }
 
-  /** Spawn-free crawl when supported, PowerShell otherwise. A files:read
-   * failure mid-flight (e.g. consent revoked) degrades to the shell path. */
+  /** Scoped-read crawl. A vdf read failure mid-flight (consent revoked,
+   * Steam gone) reports `steamFound: false` so the caller keeps its cache. */
   private async crawl(opts: {
     steamPath?: string;
     hideTools: boolean;
   }): Promise<CrawlResult> {
-    if (this.newCapsAvailable) {
-      try {
-        return await crawlSteamViaRead((p) => this.readTextFile(p), opts);
-      } catch (e) {
-        this.log?.warn(`steamgames: files:read crawl failed (${String(e)}), trying PowerShell`);
-      }
+    try {
+      return await crawlSteamViaRead((p) => this.readTextFile(p), opts);
+    } catch (e) {
+      this.log?.warn(`steamgames: files:read crawl failed (${String(e)}) — keeping cache`);
+      return { games: [], fingerprint: '', steamFound: false };
     }
-    if (!this.shell) return { games: [], fingerprint: '', steamFound: false };
-    return crawlSteam(this.shell, opts);
   }
 
   /** Publish the current game list as dynamic commands (atomic full snapshot).

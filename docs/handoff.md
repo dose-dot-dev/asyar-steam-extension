@@ -3,9 +3,10 @@
 Warm-start notes for a fresh session. This captures the current state, architecture, and the
 hard-won platform gotchas so you don't have to re-derive them.
 
-- **Extension:** `dev.dose.steam` (Asyar SDK `4.0.0`, Windows target; requires launcher ≥0.1.1-34.
-  Migrated from 3.1.1 on 2026-07-06 — version-pin bump only, zero code changes. Renamed from
-  `com.geodose.steamgames` on 2026-07-08).
+- **Extension:** `dev.dose.steam` (Asyar SDK `4.0.0`, Windows target; **since v2.0.0 requires a
+  launcher newer than v0.1.1-34** — see the final "PowerShell removed" section, which supersedes
+  every PowerShell/dual-mode description below. Migrated from SDK 3.1.1 on 2026-07-06 — version-pin
+  bump only, zero code changes. Renamed from `com.geodose.steamgames` on 2026-07-08).
 - **Repo:** <https://github.com/dose-dot-dev/asyar-steam-extension>.
 - **Dev location:** `%USERPROFILE%\Desktop\dev\dev.dose.steam` on the Windows filesystem
   (worked on via WSL at the corresponding `/mnt/c/...` path; the folder name must exactly match the id).
@@ -240,3 +241,35 @@ older installs kept flat `librarycache/<appid>_icon.jpg` files. If a machine sho
 layout, a second glob pattern covers it — mention the finding on #460 rather than silently
 handling only one. Also `files:glob` errors past a 10k-entry visit budget: always glob the
 per-appid directory, never `librarycache/**` in one call.
+
+## DONE (2026-07-08, after the #460 merge): PowerShell fully removed — v2.0.0
+
+With asyar #455 (consent surface), #456 (`files:read`), #457 (opener scheme gate), and #460
+(`files:glob`/`files:thumbnail`) ALL merged to launcher main (`82954f14`), the dual-mode era is
+over: v2.0.0 deletes `crawlSteam`, `launchGame`, the `powershell`/`capture`/`ps` helpers,
+`parseLibraryPaths` (only the PowerShell path used it), the `IShellService` wiring, and the
+`shell:spawn` manifest permission. **This supersedes gotchas #1–#5 and the dual-mode
+descriptions above** — they document why the fallback existed and stay for history; the UTF-8
+mojibake lesson (SDK-specifics list) is likewise PowerShell-era only.
+
+What remains, and the shape it has now:
+
+- One probe (`probeCapabilities`): a startup `files:glob` of the vdf path proves the launcher
+  floor AND file consent in one call; failure = fail-closed (cache kept and registered, crawl
+  paused) with a re-probe at every reindex, because consent can arrive late.
+- Launch is NOT gated on that probe — the opener needs only the declared `steam` scheme, so
+  cached games remain launchable while file consent is pending. A too-old launcher's opener
+  rejects `steam://`; the error is logged, nothing else happens.
+- A mid-crawl vdf read failure still throws out of `crawlSteamViaRead` and is mapped to
+  `steamFound: false` (keep the cache) — "consent revoked" and "Steam gone" are
+  indistinguishable from the worker.
+- All capability calls still go through the raw `invokeWire` broker: the *published*
+  asyar-sdk 4.0.0 predates every one of these APIs (launcher main's SDK source has typed
+  `files` proxies now, but no new npm release yet). Switch when one ships.
+
+**Launcher floor / Store consequence:** the newest *released* launcher (v0.1.1-34, 2026-07-06)
+predates all four PRs, so v2.0.0 only works on a dev build of main ≥ `82954f14`. The
+maintainer-invited Store publication (`asyar publish`, first third-party extension) must wait
+for the first launcher release containing #460. There is no manifest field for a launcher
+version floor — the SDK pin (`^4.0.0`) does not express it — so a too-old launcher loads the
+extension and it simply stays inert (plus the log line "file capabilities unavailable").

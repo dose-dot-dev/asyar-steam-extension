@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import {
-  parseLibraryPaths,
   parseLibraryApps,
   parseAppManifest,
   isToolEntry,
@@ -69,20 +68,6 @@ const REDIST_ACF = String.raw`"AppState"
 	"name"		"Steamworks Common Redistributables"
 	"StateFlags"		"4"
 }`;
-
-describe('parseLibraryPaths', () => {
-  it('extracts and unescapes all library roots', () => {
-    expect(parseLibraryPaths(LIBRARYFOLDERS_VDF)).toEqual([
-      'C:\\Program Files (x86)\\Steam',
-      'D:\\SteamLibrary',
-      'B:\\SteamLibrary',
-    ]);
-  });
-
-  it('returns an empty array for junk input', () => {
-    expect(parseLibraryPaths('not a vdf')).toEqual([]);
-  });
-});
 
 describe('parseAppManifest', () => {
   it('reads appid, name and StateFlags', () => {
@@ -178,7 +163,7 @@ describe('crawlSteamViaRead', () => {
     ]);
   });
 
-  it('propagates a vdf read failure so the caller can fall back to PowerShell', async () => {
+  it('propagates a vdf read failure so the caller can keep its cache', async () => {
     await expect(
       crawlSteamViaRead(read, { steamPath: 'E:\\NoSteamHere' }),
     ).rejects.toThrow('not covered');

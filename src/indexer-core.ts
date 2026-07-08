@@ -3,22 +3,19 @@
 // extension.
 //
 // Tier 2 extensions run in a sandboxed iframe that CANNOT touch
-// `@tauri-apps/api`. The launcher exposes no file-content read service either
-// (`fs:read`/FileService.read is unimplemented). The only way to read Steam's
-// `libraryfolders.vdf` / `appmanifest_*.acf` files is `IShellService.spawn`.
-//
-// Asyar's extension `shell:spawn` does NOT pass CREATE_NO_WINDOW, so a
-// console-subsystem child (powershell.exe) flashes a window. We mitigate by
-// doing the whole crawl in ONE PowerShell call with `-WindowStyle Hidden`, and
-// launch through the same already-trusted, hidden powershell.
+// `@tauri-apps/api`. Steam's `libraryfolders.vdf` / `appmanifest_*.acf` files
+// are read through the launcher's scoped `files:read` (asyar#456), bounded to
+// the manifest's `permissionArgs["files:read"]` globs; launching goes through
+// the scheme-gated opener (asyar#457). Requires a launcher newer than
+// v0.1.1-34 — the earlier `shell:spawn` + PowerShell fallback was removed in
+// v2.0.0 (see git history for the dual-mode era).
 //
 // Concerns are separated:
-//   • Pure parsers (`parseLibraryPaths`, `parseAppManifest`, `gamesFromManifests`)
+//   • Pure parsers (`parseLibraryApps`, `parseAppManifest`, `gamesFromManifests`)
 //     — no IO, unit-tested.
-//   • Shell-driven IO (`crawlSteam`, `launchGame`) — spawn through the SDK.
+//   • IO (`crawlSteamViaRead`, `launchGameViaOpener`) — capability calls are
+//     injected by the worker, so these stay trivially testable too.
 // ───────────────────────────────────────────────────────────────────────────
-
-import type { IShellService, ShellChunk } from 'asyar-sdk/contracts';
 
 export interface SteamGame {
   appid: string;
@@ -41,11 +38,6 @@ export interface CrawlResult {
 }
 
 const DEFAULT_WINDOWS_STEAM_ROOT = 'C:\\Program Files (x86)\\Steam';
-
-/** Delimiter emitted between concatenated appmanifest bodies. */
-const ACF_DELIM = '<<<ASYAR-ACF>>>';
-/** Marker printed by the crawl script when the vdf is missing. */
-const NO_STEAM_MARKER = '<<<ASYAR-NO-STEAM>>>';
 
 /** Non-game appids/names Steam stores as `appmanifest` files. */
 const TOOL_NAME_PATTERN =
@@ -77,22 +69,6 @@ export function parseLibraryApps(vdf: string): Array<{ path: string; appids: str
     while ((a = idRe.exec(appsBlock)) !== null) appids.push(a[1]);
     return { path: anchor.path, appids };
   });
-}
-
-/**
- * Extract library root folders from `libraryfolders.vdf`. Each library block
- * carries a `"path"  "<root>"` line; Steam stores paths with escaped
- * backslashes (`C:\\Program Files (x86)\\Steam`), which we unescape.
- */
-export function parseLibraryPaths(vdf: string): string[] {
-  const paths: string[] = [];
-  const re = /"path"\s+"((?:[^"\\]|\\.)*)"/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(vdf)) !== null) {
-    const unescaped = m[1].replace(/\\\\/g, '\\').replace(/\\"/g, '"');
-    if (unescaped) paths.push(unescaped);
-  }
-  return paths;
 }
 
 /**
@@ -155,136 +131,12 @@ function steamRoot(opts: CrawlOptions = {}): string {
   return (opts.steamPath?.trim() || DEFAULT_WINDOWS_STEAM_ROOT).replace(/[\\/]+$/, '');
 }
 
-/** Single-quote a value for a PowerShell command (doubling embedded quotes). */
-function ps(value: string): string {
-  return `'${value.replace(/'/g, "''")}'`;
-}
-
-const SPAWN_TIMEOUT_MS = 30_000;
-
-/** Spawn a process and resolve with its full stdout once it exits. */
-function capture(shell: IShellService, program: string, args: string[]): Promise<string> {
-  return new Promise<string>((resolve, reject) => {
-    let stdout = '';
-    let settled = false;
-    const finish = (fn: () => void) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      fn();
-    };
-
-    const handle = shell.spawn({ program, args });
-    const timer = setTimeout(() => {
-      try {
-        handle.abort();
-      } catch {
-        /* ignore */
-      }
-      finish(() => reject(new Error(`${program} timed out after ${SPAWN_TIMEOUT_MS}ms`)));
-    }, SPAWN_TIMEOUT_MS);
-
-    handle.onChunk((c: ShellChunk) => {
-      if (c.stream === 'stdout') stdout += c.data;
-    });
-    handle.onDone(() => finish(() => resolve(stdout)));
-    handle.onError((e) =>
-      finish(() => reject(new Error(`${program} failed: ${e.code} ${e.message}`))),
-    );
-  });
-}
-
-/**
- * Run a PowerShell script and return its stdout. `-WindowStyle Hidden`
- * suppresses the console window Asyar's spawn would otherwise flash; UTF-8 is
- * forced so non-ASCII game names (™, ©, accents) survive the pipe.
- */
-function powershell(shell: IShellService, script: string): Promise<string> {
-  const utf8Script = `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; ${script}`;
-  return capture(shell, 'powershell.exe', [
-    '-NoProfile',
-    '-NonInteractive',
-    '-WindowStyle',
-    'Hidden',
-    '-ExecutionPolicy',
-    'Bypass',
-    '-Command',
-    utf8Script,
-  ]);
-}
-
-// ── High-level steps ────────────────────────────────────────────────────────
-
-/**
- * Crawl every Steam library in a SINGLE PowerShell call: read
- * `libraryfolders.vdf`, resolve each library's `steamapps` folder, and dump
- * every `appmanifest_*.acf`. Parsing back into games happens in TS.
- */
-export async function crawlSteam(
-  shell: IShellService,
-  opts: CrawlOptions = {},
-): Promise<CrawlResult> {
-  const root = steamRoot(opts);
-  const vdfPath = joinPath(root, 'steamapps', 'libraryfolders.vdf');
-
-  // One script does it all: bail with a marker if Steam is absent, otherwise
-  // parse library roots from the vdf and stream out each appmanifest body.
-  const script = [
-    `$ErrorActionPreference='SilentlyContinue'`,
-    `$vdf=${ps(vdfPath)}`,
-    `if(-not (Test-Path -LiteralPath $vdf)){ '${NO_STEAM_MARKER}'; return }`,
-    `$c=Get-Content -Raw -Encoding UTF8 -LiteralPath $vdf`,
-    `$roots=[regex]::Matches($c,'"path"\\s+"([^"]+)"') | ForEach-Object { $_.Groups[1].Value -replace '\\\\','\\' }`,
-    `$roots=@(${ps(root)}) + $roots | Select-Object -Unique`,
-    `$dirs=$roots | ForEach-Object { Join-Path $_ 'steamapps' } | Where-Object { Test-Path -LiteralPath $_ }`,
-    `if($dirs){ Get-ChildItem -Path $dirs -Filter 'appmanifest_*.acf' | ForEach-Object { '${ACF_DELIM}'; Get-Content -Raw -Encoding UTF8 -LiteralPath $_.FullName } }`,
-  ].join('; ');
-
-  let raw: string;
-  try {
-    raw = await powershell(shell, script);
-  } catch {
-    return { games: [], fingerprint: '', steamFound: false };
-  }
-
-  if (raw.includes(NO_STEAM_MARKER)) {
-    return { games: [], fingerprint: '', steamFound: false };
-  }
-
-  const manifests = raw
-    .split(ACF_DELIM)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-  const games = gamesFromManifests(manifests, opts);
-  return { games, fingerprint: fingerprintGames(games), steamFound: true };
-}
-
-/**
- * Launch a game via Steam's URL protocol.
- *
- * Legacy path: on launchers without the declared-scheme opener
- * (asyar#449), `tauri_plugin_opener.open_url` refuses non-web schemes like
- * `steam://`, so launching goes through `shell:spawn`. We reuse the same
- * `powershell.exe` the crawl already trusted (no new trust prompt), run
- * `Start-Process` (exits 0 — no "run failed"), and inherit `-WindowStyle Hidden`
- * from `powershell()` (no console window).
- */
-export async function launchGame(shell: IShellService, appid: string): Promise<void> {
-  const url = `steam://run/${appid}`;
-  if (isWindows()) {
-    await powershell(shell, `Start-Process ${ps(url)}`);
-  } else {
-    await capture(shell, 'xdg-open', [url]);
-  }
-}
-
-// ── files:read / opener paths (asyar#448 + #449 launchers) ─────────────────
+// ── files:read / opener IO ──────────────────────────────────────────────────
 //
-// On launchers with the `files:read` permission and the declared-scheme
-// opener, the whole crawl-and-launch cycle needs no `shell:spawn` at all:
-// bounded reads scoped to the manifest globs, and `steam://run/<appid>`
-// through the gated opener. The worker probes for support at startup and
-// falls back to the PowerShell paths above on older launchers.
+// Bounded reads scoped to the manifest's `files:read` globs, and
+// `steam://run/<appid>` through the scheme-gated opener — no `shell:spawn`
+// anywhere. The worker injects the capability calls (raw wire invokes; the
+// bundled SDK has no typed proxies for them yet).
 
 /** Bounded text read of an absolute path (asyar:api:files:read). */
 export type ReadTextFile = (path: string) => Promise<string>;
@@ -323,8 +175,8 @@ export function iconGlobPatterns(appid: string, opts: CrawlOptions = {}): string
  * path, so no directory enumeration is needed.
  *
  * A vdf read failure THROWS rather than returning `steamFound: false`:
- * the caller can't tell "capability missing/denied" apart from "Steam
- * absent" here, and the PowerShell fallback probes for Steam properly.
+ * "capability denied (consent pending/revoked)" and "Steam absent" are
+ * indistinguishable here, and the caller must keep its cache in both cases.
  */
 export async function crawlSteamViaRead(
   read: ReadTextFile,
