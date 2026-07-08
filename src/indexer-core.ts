@@ -150,6 +150,11 @@ function joinPath(...parts: string[]): string {
     .join(sep);
 }
 
+/** The configured (or default) Steam ROOT folder, trailing separators trimmed. */
+function steamRoot(opts: CrawlOptions = {}): string {
+  return (opts.steamPath?.trim() || DEFAULT_WINDOWS_STEAM_ROOT).replace(/[\\/]+$/, '');
+}
+
 /** Single-quote a value for a PowerShell command (doubling embedded quotes). */
 function ps(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
@@ -219,7 +224,7 @@ export async function crawlSteam(
   shell: IShellService,
   opts: CrawlOptions = {},
 ): Promise<CrawlResult> {
-  const root = (opts.steamPath?.trim() || DEFAULT_WINDOWS_STEAM_ROOT).replace(/[\\/]+$/, '');
+  const root = steamRoot(opts);
   const vdfPath = joinPath(root, 'steamapps', 'libraryfolders.vdf');
 
   // One script does it all: bail with a marker if Steam is absent, otherwise
@@ -286,8 +291,30 @@ export type ReadTextFile = (path: string) => Promise<string>;
 
 /** The `libraryfolders.vdf` path for the configured (or default) root. */
 export function steamVdfPath(opts: CrawlOptions = {}): string {
-  const root = (opts.steamPath?.trim() || DEFAULT_WINDOWS_STEAM_ROOT).replace(/[\\/]+$/, '');
-  return joinPath(root, 'steamapps', 'libraryfolders.vdf');
+  return joinPath(steamRoot(opts), 'steamapps', 'libraryfolders.vdf');
+}
+
+/**
+ * `files:glob` patterns (asyar#460) locating a game's square client icon,
+ * in preference order. Artwork always lives under the Steam ROOT's
+ * `appcache\librarycache`, never on the game's library drive.
+ *
+ * 1. Current per-appid layout: `librarycache/<appid>/<40-hex-sha1>.jpg` —
+ *    the only artwork file present for every installed game (survey
+ *    2026-07-08: 34/34; `logo.png`/`header.jpg`/`library_600x900.jpg` are
+ *    all sparse). 40 `?`s match exactly the hex name and nothing else.
+ * 2. Legacy flat layout (pre-2023 installs): `librarycache/<appid>_icon.jpg`.
+ *
+ * Each pattern starts with an absolute literal prefix as `files:glob`
+ * requires, and stays inside one per-appid directory — never glob
+ * `librarycache/**` in one call, the command errors past a 10k-visit budget.
+ */
+export function iconGlobPatterns(appid: string, opts: CrawlOptions = {}): string[] {
+  const cacheDir = joinPath(steamRoot(opts), 'appcache', 'librarycache');
+  return [
+    joinPath(cacheDir, appid, `${'?'.repeat(40)}.jpg`),
+    joinPath(cacheDir, `${appid}_icon.jpg`),
+  ];
 }
 
 /**

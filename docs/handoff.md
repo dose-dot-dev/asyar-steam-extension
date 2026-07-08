@@ -169,3 +169,56 @@ write a throwaway `*.test.ts` that implements a `child_process`-backed fake `ISh
   Build Tools on Windows. **Windows builds must run from native PowerShell** — Windows processes
   spawned via WSL interop cannot traverse junctions ("untrusted mount point"), which breaks both
   pnpm layouts and the launcher's build.rs.
+
+## Next task (written 2026-07-08): real artwork icons via launcher PR #460
+
+Supersedes the "What's next" above where they conflict: asyar #455 (consent surface), #456
+(`files:read`), and #457 (`shell:open-url` schemes) are ALL merged upstream as of 2026-07-08.
+The dual-mode probes below still matter for *released* launchers, but a dev build of launcher
+`main` now has everything except thumbnails.
+
+**The task:** launcher PR [#460](https://github.com/Xoshbin/asyar/pull/460) (open, closes #459;
+branch `feat/files-thumbnail` in `../asyar`, commit `014cb43e`) adds two commands this extension
+should adopt to give every game row its real Steam icon. A manual walkthrough of exactly that was
+**promised in the PR thread** — migrate, verify against a dev launcher build of that branch, then
+report the result on #460 (the user must approve any GitHub comment first; never include the real
+name or `C:\Users\...` paths).
+
+**The new API** (wire names, via the same raw-broker `invokeWire` pattern `files:read` already
+uses in `worker.ts` — bundled SDK 4.0.0 has no typed proxy for them):
+
+- `files:glob` `{ pattern, opts: { maxResults? } }` → `string[]` — scoped enumeration under the
+  manifest's `files:read` globs. The REQUESTED pattern must start with an absolute literal prefix
+  (the declared manifest globs may stay unanchored). Sorted, ≤256 results, symlinks skipped,
+  missing root → `[]`, out-of-scope pattern → rejects.
+- `files:thumbnail` `{ path, opts: { maxDim? } }` → `string | null` — `asyar-thumb://` URL (or
+  `http://asyar-thumb.localhost/...` on Windows), image files only (identical on every OS),
+  `maxDim` clamped 16–512. The URL works directly as a dynamic command `icon` — the launcher
+  frontend renders image-URL icons on search rows with no changes.
+
+**Migration sketch:**
+
+1. Manifest: add `"**/appcache/librarycache/**"` to `permissionArgs["files:read"]` (artwork
+   lives under the Steam ROOT, not the library drives). Bump version; users re-consent on the
+   changed permission args.
+2. Per game, enumerate the sha1-named square icon (the ONLY artwork present for 100% of the 34
+   games surveyed on this machine; `logo.png`/`library_600x900.jpg`/`header.jpg` are all sparse):
+   `files:glob` with `<steamRoot>/appcache/librarycache/<appid>/` + `'?'.repeat(40)` + `.jpg`,
+   then `files:thumbnail(hits[0], { maxDim: 64 })` (source icons are 32×32; the pipeline never
+   upscales). Re-request URLs on every registration — the thumb cache key includes mtime and the
+   cache evicts oldest-first, so never persist URLs in the storage cache.
+3. Probe: gate on a startup `files:glob` succeeding (unknown command on older launchers →
+   rejection), alongside the existing `probeNewCapabilities`; iconless registration is the
+   fallback. Multiple hex hits per dir are possible — hits are sorted; picking `hits[0]` is
+   deterministic, but consider preferring the newest or logging when >1.
+4. Walkthrough (Windows PowerShell, installed Asyar quit first): in `../asyar` check out
+   `feat/files-thumbnail`, `pnpm tauri dev` from `asyar-launcher/`; rebuild this extension
+   (`npm run build`), toggle it in Settings → Extensions, confirm artwork rows in main search,
+   consent chips show the new glob, and out-of-scope probes still fail closed. Screenshot-worthy
+   result → report on #460.
+
+**Watch out:** the 40-hex layout is Steam's current per-appid `librarycache/<appid>/` scheme;
+older installs kept flat `librarycache/<appid>_icon.jpg` files. If a machine shows the flat
+layout, a second glob pattern covers it — mention the finding on #460 rather than silently
+handling only one. Also `files:glob` errors past a 10k-entry visit budget: always glob the
+per-appid directory, never `librarycache/**` in one call.

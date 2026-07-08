@@ -6,6 +6,7 @@ import {
   isToolEntry,
   gamesFromManifests,
   crawlSteamViaRead,
+  iconGlobPatterns,
   launchGameViaOpener,
   steamVdfPath,
 } from './indexer-core';
@@ -208,5 +209,35 @@ describe('launchGameViaOpener', () => {
         throw new Error('scheme not declared');
       }, '42'),
     ).rejects.toThrow('scheme not declared');
+  });
+});
+
+describe('iconGlobPatterns', () => {
+  const norm = (p: string): string => p.replace(/\//g, '\\');
+
+  it('targets the per-appid sha1 layout first, the legacy flat layout second', () => {
+    const [sha1, flat] = iconGlobPatterns('1091500').map(norm);
+    expect(sha1).toBe(
+      'C:\\Program Files (x86)\\Steam\\appcache\\librarycache\\1091500\\' +
+        '?'.repeat(40) +
+        '.jpg',
+    );
+    expect(flat).toBe(
+      'C:\\Program Files (x86)\\Steam\\appcache\\librarycache\\1091500_icon.jpg',
+    );
+  });
+
+  it('honors the steamPath override and trims trailing separators', () => {
+    const [sha1] = iconGlobPatterns('730', { steamPath: 'D:\\Steam\\' }).map(norm);
+    expect(sha1).toBe(
+      'D:\\Steam\\appcache\\librarycache\\730\\' + '?'.repeat(40) + '.jpg',
+    );
+  });
+
+  it('stays inside one per-appid directory (no librarycache-wide walk)', () => {
+    for (const pattern of iconGlobPatterns('42')) {
+      expect(pattern).not.toContain('**');
+      expect(norm(pattern)).toContain('\\librarycache\\42');
+    }
   });
 });

@@ -29,6 +29,7 @@ import manifest from '../manifest.json';
 import {
   crawlSteam,
   crawlSteamViaRead,
+  iconGlobPatterns,
   launchGame,
   launchGameViaOpener,
   steamVdfPath,
@@ -41,6 +42,11 @@ type WireInvoke = <T>(command: string, payload?: Record<string, unknown>) => Pro
 
 const STORE_KEY = 'steam-index';
 const GAME_CMD_PREFIX = 'game-';
+/** Row icon when no artwork is available (older launcher, missing art). */
+const FALLBACK_ICON = '🎮';
+/** Source icons are 32×32 and the thumbnail pipeline never upscales; 64
+ * leaves headroom for future larger art without re-requesting. */
+const ICON_MAX_DIM = 64;
 // Skip the startup refresh (and its one PowerShell call) when the cache was
 // updated this recently — avoids a scan every time Asyar restarts.
 const STARTUP_REFRESH_MS = 60 * 60 * 1000; // 1 hour
@@ -65,13 +71,15 @@ class SteamGamesExtension implements Extension {
   private indexing = false;
 
   /** Raw broker access for wire calls the bundled SDK (4.0.0) has no typed
-   * proxy for yet: `files:read` (asyar#448) and `opener:open` behind the
-   * declared-scheme gate (asyar#449). TODO: switch to typed SDK calls once
-   * asyar-sdk ships them. */
+   * proxy for yet: `files:read` (asyar#448), `opener:open` behind the
+   * declared-scheme gate (asyar#449), and `files:glob`/`files:thumbnail`
+   * (asyar#460). TODO: switch to typed SDK calls once asyar-sdk ships them. */
   private invokeWire?: WireInvoke;
   /** True once a probe proved this launcher supports the scoped `files:read`
    * (and therefore the scheme-gated opener that ships with it). */
   private newCapsAvailable = false;
+  /** True once a probe proved `files:glob`/`files:thumbnail` (asyar#460). */
+  private thumbsAvailable = false;
 
   async initialize(ctx: ExtensionContext): Promise<void> {
     this.ctx = ctx;
@@ -85,6 +93,7 @@ class SteamGamesExtension implements Extension {
     const broker = (files as unknown as { broker?: { invoke: WireInvoke } })?.broker;
     if (broker) this.invokeWire = broker.invoke.bind(broker) as WireInvoke;
     await this.probeNewCapabilities();
+    await this.probeThumbnails();
 
     await this.loadCache();
     // All setup happens here: the SDK bridge calls initialize() but never
@@ -136,6 +145,54 @@ class SteamGamesExtension implements Extension {
     }
   }
 
+  /** One `files:glob` for the vdf's literal path proves both asyar#460
+   * commands exist (they ship together). A missing Steam root still resolves
+   * to `[]` — an array either way. Pre-#460 launchers dispatch the unknown
+   * wire type to a missing service method and resolve `undefined`. */
+  private async probeThumbnails(): Promise<void> {
+    if (!this.invokeWire) return;
+    try {
+      const res = await this.invokeWire<unknown>('files:glob', {
+        pattern: steamVdfPath({ steamPath: this.steamPathPref() }),
+        opts: {},
+      });
+      this.thumbsAvailable = Array.isArray(res);
+    } catch {
+      this.thumbsAvailable = false;
+    }
+    this.log?.info(
+      this.thumbsAvailable
+        ? 'steamgames: files:glob/thumbnail available — using real game artwork'
+        : 'steamgames: files:glob/thumbnail unavailable — using fallback icon',
+    );
+  }
+
+  /** Resolve one game's row icon: glob for its client icon (per-appid sha1
+   * layout first, legacy flat layout second), then thumbnail the hit. The
+   * returned `asyar-thumb://` URL is keyed on source mtime and the cache
+   * evicts oldest-first, so URLs are re-requested at every registration and
+   * NEVER persisted. Any failure falls back to the generic icon. */
+  private async gameIcon(appid: string): Promise<string> {
+    if (!this.thumbsAvailable || !this.invokeWire) return FALLBACK_ICON;
+    try {
+      for (const pattern of iconGlobPatterns(appid, { steamPath: this.steamPathPref() })) {
+        const hits = await this.invokeWire<unknown>('files:glob', { pattern, opts: {} });
+        if (!Array.isArray(hits) || hits.length === 0 || typeof hits[0] !== 'string') continue;
+        if (hits.length > 1) {
+          this.log?.info(`steamgames: ${hits.length} icon candidates for ${appid}, using first`);
+        }
+        const url = await this.invokeWire<unknown>('files:thumbnail', {
+          path: hits[0],
+          opts: { maxDim: ICON_MAX_DIM },
+        });
+        if (typeof url === 'string' && url) return url;
+      }
+    } catch (e) {
+      this.log?.warn(`steamgames: icon lookup failed for ${appid}: ${String(e)}`);
+    }
+    return FALLBACK_ICON;
+  }
+
   private async readTextFile(path: string): Promise<string> {
     if (!this.invokeWire) throw new Error('broker unavailable');
     const res = await this.invokeWire<unknown>('files:read', { path, opts: {} });
@@ -171,10 +228,11 @@ class SteamGamesExtension implements Extension {
    */
   private async reindex(force: boolean): Promise<void> {
     if (this.indexing) return;
-    // Re-probe when the startup probe failed: consent may have been granted
+    // Re-probe when a startup probe failed: consent may have been granted
     // since (the launcher withholds files:read until the user approves the
     // permission review), and a reindex is the natural moment to notice.
     if (!this.newCapsAvailable) await this.probeNewCapabilities();
+    if (!this.thumbsAvailable) await this.probeThumbnails();
     if (!this.newCapsAvailable && !this.shell) return;
     this.indexing = true;
     try {
@@ -229,14 +287,18 @@ class SteamGamesExtension implements Extension {
     return crawlSteam(this.shell, opts);
   }
 
-  /** Publish the current game list as dynamic commands (atomic full snapshot). */
+  /** Publish the current game list as dynamic commands (atomic full snapshot).
+   * Icons resolve concurrently (the launcher caps thumbnail generation
+   * host-side); per-game failures degrade to the fallback icon, never block
+   * registration. */
   private async registerGameCommands(): Promise<void> {
     if (!this.commands) return;
-    const regs: DynamicCommandRegistration[] = this.games.map((g) => ({
+    const icons = await Promise.all(this.games.map((g) => this.gameIcon(g.appid)));
+    const regs: DynamicCommandRegistration[] = this.games.map((g, i) => ({
       id: `${GAME_CMD_PREFIX}${g.appid}`,
       name: g.name,
       description: 'Launch on Steam',
-      icon: '🎮',
+      icon: icons[i],
     }));
     try {
       await this.commands.replaceDynamicCommands(regs);
