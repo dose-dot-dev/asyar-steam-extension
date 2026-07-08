@@ -214,3 +214,23 @@ The extension then sets that URL as the dynamic command's `icon` and registers a
 Completes the visual parity story for the #448/#449 extension pattern: indexed external items
 (games, projects, documents…) get real artwork through the exact cache/scheme/CSP/render paths the
 launcher already uses for its own previews, at the cost of one gated command route.
+
+### Post-filing addendum (2026-07-08, not yet posted to the thread)
+
+Coverage survey of `librarycache` artwork across all 34 installed games on the dev machine, done
+after filing: the **only** file present for 100% of games is the sha1-named square icon
+(`<appid>/<40-hex>.jpg`). Fixed-name art is sparse — `logo.png` 17/34, `library_600x900.jpg` 15/34,
+`header.jpg` 8/34. Since extensions cannot enumerate directories, an exact-path-only
+`files:thumbnail` cannot reach the one file that always exists.
+
+**The PR must therefore include scoped enumeration**, one of:
+
+- `path` accepts a glob resolved within the declared `files:read` scope, deterministic pick
+  (a 40-`?` glob matches the hex name precisely); or
+- a `files:glob` sibling command returning scope-matching paths.
+
+Alternatives evaluated and rejected: raw extension writes to `icon_cache/` (flat launcher-owned
+namespace → collision/spoofing risk, would be the platform's first extension *write* capability, no
+eviction or uninstall cleanup) and a mediated `icons:ingest` (duplicates `get_or_generate` into an
+eviction-less directory). Thumbnail-cache eviction is a non-issue for this use
+(`CACHE_CAP_BYTES` = 300 MB, oldest-first sweep, URLs re-requested on every registration).
