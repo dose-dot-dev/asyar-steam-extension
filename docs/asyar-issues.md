@@ -1,6 +1,8 @@
-# GitHub issues (top 2 asks) — FILED 2026-07-06
+# GitHub issues — maintainer asks
 
-Both issues are now filed on `Xoshbin/asyar` (as `geodose`):
+Issues 1–2 filed on `Xoshbin/asyar` 2026-07-06 (as `geodose`); Issue 3 filed 2026-07-08 (as `dose-dot-dev`):
+
+- Issue 3 → [#459](https://github.com/Xoshbin/asyar/issues/459)
 
 - Issue 1 → [#448](https://github.com/Xoshbin/asyar/issues/448)
 - Issue 2 → [#449](https://github.com/Xoshbin/asyar/issues/449)
@@ -132,3 +134,83 @@ handlers the same way Asyar launches app entries.
 Combined with a `files:read` API (separate issue), this removes `shell:spawn` entirely from the
 "index an app's files, then launch it by URL" extension pattern — no console windows, no run
 notifications, no trust prompts.
+
+---
+
+## Issue 3 — filed as [#459](https://github.com/Xoshbin/asyar/issues/459) (2026-07-08)
+
+**Title:** Expose permission-gated file thumbnails to Tier-2 extensions (`files:thumbnail`) so dynamic commands can show real artwork
+
+**Labels:** enhancement, sdk, extensions
+
+**Body:**
+
+### Problem
+
+Dynamic commands can only show built-in icons (`icon:*`) or emoji. Launcher-indexed applications
+show their real icons (extracted host-side into `icon_cache/`, served via `asyar-icon://`), so any
+extension that registers *launchable external items* as dynamic commands — the pattern #448/#449
+enable — renders visibly second-class next to them.
+
+Concrete case: a Steam extension registers each installed game as a dynamic command. Steam already
+keeps per-game square icons on disk (`appcache\librarycache\<appid>\<sha1>.jpg`, 32×32, 1–2.5 KB,
+present for 100% of installed games on the test machine), but the extension has no sanctioned way to
+turn those files into row icons.
+
+### The primitive already exists
+
+The thumbnail module added for file-search previews is a complete, generic image→icon pipeline:
+
+- `thumbnail/mod.rs` — `get_or_generate(state, cache_dir, path, max_dim)`: content-addressed
+  (path+mtime+size+dim) PNG cache with concurrency capping and byte-cap eviction
+  (`cache.rs::evict_if_over_cap`), downscaling via the `image` crate.
+- `uri_schemes.rs` — serves `thumbnail_cache/` under `asyar-thumb://` with the same traversal
+  guards as `asyar-icon://`.
+- The window CSP already allows `img-src … asyar-thumb: http://asyar-thumb.localhost`.
+- `LauncherListRow.svelte` already renders any image-URL icon string on a search row
+  (`iconUtils.isIconImage`), and dynamic-command registration passes `icon` through untouched
+  (`commands/dynamic_commands.rs`) — so a thumbnail URL used as a dynamic command's `icon` renders
+  today with **zero frontend changes**.
+
+It just isn't reachable by extensions: `get_file_thumbnail` (`thumbnail/commands.rs`) is a raw
+host-only Tauri command (called from `built-in-features/file-search/DefaultView.svelte` via
+`invokeSafe`), is not in the `asyar:api:*` permission gate, and — being host-only — performs **no
+path-scope validation at all**, so it can't simply be opened up as-is.
+
+### Proposed solution
+
+Route `asyar:api:files:thumbnail` → `get_or_generate` through the permission gate, scoped exactly
+like `files:read` (#448 / PR #456):
+
+1. **Permission:** gate on `files:read` itself — a thumbnail is strictly less information than the
+   byte read that permission already grants, so no new consent surface is needed; the declared
+   globs shown at install/enable (#455) cover both. (A separate `files:thumbnail` permission works
+   too if the distinction is preferred in the prompt.)
+2. **Scope:** the caller's declared `permissionArgs["files:read"]` globs ONLY, plus the same hard
+   deny-list, re-checked inside the Rust command (the two-layer pattern from PR #456).
+3. **API:** `asyar:api:files:thumbnail { path, maxDim? }` → existing pipeline → returns the same
+   `asyar-thumb://` / `http://asyar-thumb.localhost/` URL the host frontend uses (or `null` when no
+   strategy exists). SDK: `IFilesService.thumbnail(path, opts?)` beside `search`/`status`/`read`.
+
+The extension then sets that URL as the dynamic command's `icon` and registers as usual.
+
+### Alternatives considered
+
+- **Base64/binary mode on `files:read` + `data:` URIs** — works, but ships image bytes through the
+  IPC bridge and persists them into the search index per command, and every extension reinvents
+  resizing/caching the thumbnail module already does well.
+- **Extensions writing into `icon_cache/`** — that directory is launcher-owned; no.
+
+### Acceptance criteria
+
+- [ ] An extension declaring `files:read` globs covering `**/appcache/librarycache/**` can request a
+      thumbnail for a matching file and receive an `asyar-thumb://` URL; paths outside its globs or
+      on the deny-list are rejected.
+- [ ] That URL, set as a dynamic command `icon`, renders in the main search row.
+- [ ] No `shell:spawn` involved at any point.
+
+### Impact
+
+Completes the visual parity story for the #448/#449 extension pattern: indexed external items
+(games, projects, documents…) get real artwork through the exact cache/scheme/CSP/render paths the
+launcher already uses for its own previews, at the cost of one gated command route.
