@@ -1,0 +1,63 @@
+{
+  "id": "dev.dose.steam",
+  "name": "Steam Games",
+  "version": "1.0.0",
+  "description": "Indexes installed Steam games in the background and launches them from the Asyar search via steam://run.",
+  "author": "dose.dev",
+  "searchable": true,
+  "icon": "🎮",
+  "type": "extension",
+  "asyarSdk": "^4.0.0",
+  "permissions": [
+    "shell:spawn",
+    "storage:read",
+    "storage:write",
+    "notifications:send",
+    "files:read",
+    "shell:open-url"
+  ],
+  "permissionArgs": {
+    "files:read": [
+      "**/steamapps/libraryfolders.vdf",
+      "**/steamapps/appmanifest_*.acf"
+    ],
+    "shell:open-url": ["steam"]
+  },
+  "preferences": [
+    {
+      "name": "steamPath",
+      "type": "directory",
+      "title": "Steam install folder",
+      "description": "Override the Steam root folder if it is not at the default location (e.g. C:\\Program Files (x86)\\Steam). Leave blank to auto-detect.",
+      "default": ""
+    },
+    {
+      "name": "hideTools",
+      "type": "checkbox",
+      "title": "Hide Steam tools & redistributables",
+      "description": "Skip non-game entries such as Steamworks Common Redistributables, Proton, and Steam Linux Runtime.",
+      "default": true
+    },
+    {
+      "name": "notifyOnReindex",
+      "type": "checkbox",
+      "title": "Notify after a background reindex",
+      "description": "Show a notification when the scheduled background reindex finds a change. Manual reindexes always notify.",
+      "default": false
+    }
+  ],
+  "commands": [
+    {
+      "id": "reindex",
+      "name": "Reindex Steam Games",
+      "description": "Rescan Steam libraries now and refresh the launchable game list.",
+      "mode": "background",
+      "schedule": {
+        "intervalSeconds": 28800
+      }
+    }
+  ],
+  "background": {
+    "main": "dist/worker.js"
+  }
+}
