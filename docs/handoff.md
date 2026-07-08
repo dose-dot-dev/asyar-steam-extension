@@ -170,7 +170,25 @@ write a throwaway `*.test.ts` that implements a `child_process`-backed fake `ISh
   spawned via WSL interop cannot traverse junctions ("untrusted mount point"), which breaks both
   pnpm layouts and the launcher's build.rs.
 
-## Next task (written 2026-07-08): real artwork icons via launcher PR #460
+## DONE (2026-07-08): real artwork icons via launcher PR #460
+
+Implemented in v1.1.0 (commit `50b689b`) and verified end-to-end against a dev launcher build
+of `feat/files-thumbnail`; walkthrough reported on the PR
+(<https://github.com/Xoshbin/asyar/pull/460#issuecomment-4917480559>). All 32 games (34 minus
+2 tools) render their real client icon in main search. Consent fail-closed confirmed:
+pre-approval the probe is denied → fallback icon; the reindex re-probe picks the capability up
+after approval without a restart. Only the per-appid sha1 layout exists on this machine — the
+flat-layout pattern resolves to `[]` and falls through cleanly.
+
+**Walkthrough side-finding (launcher bug, GC):** the search index (`search_index.db`,
+`search_items`, ids `cmd_<extId>_dyn_<cmdId>`) persists dynamic-command rows and only the owning
+extension's next `replaceDynamicCommands` GCs them — the `com.geodose.steamgames` →
+`dev.dose.steam` rename orphaned 32 rows, which surfaced as duplicate game entries the moment
+icons made the twins distinguishable. Hand-purged 2026-07-08 (launcher stopped, sqlite DELETE on
+the old-id rows). The user will file the launcher issue; details in `../asyar` CLAUDE.md
+"Known unrelated bug #2".
+
+The rest of this section is the original pickup brief, kept for the API reference.
 
 Supersedes the "What's next" above where they conflict: asyar #455 (consent surface), #456
 (`files:read`), and #457 (`shell:open-url` schemes) are ALL merged upstream as of 2026-07-08.

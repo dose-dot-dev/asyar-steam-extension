@@ -6,9 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `dev.dose.steam` (repo: [asyar-steam-extension](https://github.com/dose-dot-dev/asyar-steam-extension)) — a Tier-2 **[Asyar](https://github.com/Xoshbin/asyar)** extension (SDK `4.0.0`, Windows target; requires launcher ≥0.1.1-34). It indexes installed Steam games in the background and registers each as a launchable command in Asyar's main search (`steam://run/<appid>`). No UI/view — everything runs in an always-on **worker** iframe.
 
-## Current task (as of 2026-07-08)
+## Status (as of 2026-07-08)
 
-Give every game row its real Steam icon via launcher PR [#460](https://github.com/Xoshbin/asyar/pull/460) (`files:glob` + `files:thumbnail`, open, authored by us in `../asyar` branch `feat/files-thumbnail`), then run the manual walkthrough **promised in that PR's thread** and report there (user approves any GitHub comment first). Full pickup brief — API shapes, manifest change, probe/fallback plan, walkthrough steps, flat-librarycache caveat — in `docs/handoff.md` § "Next task (written 2026-07-08)". Note: asyar #455/#456/#457 are all merged upstream; the dual-mode fallbacks below are for released launchers only.
+Per-game artwork icons are **implemented and verified** against launcher PR [#460](https://github.com/Xoshbin/asyar/pull/460) (`files:glob` + `files:thumbnail`, open, authored by us in `../asyar` branch `feat/files-thumbnail`); the promised manual walkthrough is [reported on the PR](https://github.com/Xoshbin/asyar/pull/460#issuecomment-4917480559). Version 1.1.0. The icon path is a third dual-mode: a startup `files:glob` probe (re-probed on reindex, since consent can arrive late) gates artwork; pre-#460 launchers keep the 🎮 fallback. Icon URLs (`asyar-thumb://`) are re-requested at every registration and **never persisted** — they're mtime-keyed and the launcher cache evicts oldest-first. Asyar #455/#456/#457 are all merged upstream; the dual-mode fallbacks below are for released launchers only. Walkthrough details and the duplicate-rows purge story: `docs/handoff.md`.
 
 ## Commands
 
