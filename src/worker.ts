@@ -66,10 +66,11 @@ class SteamGamesExtension implements Extension {
   private lastIndexedAt = 0;
   private indexing = false;
 
-  /** Raw broker access for wire calls the bundled SDK (4.0.0) has no typed
-   * proxy for yet: `files:read` (asyar#456), `opener:open` behind the
-   * declared-scheme gate (asyar#457), and `files:glob`/`files:thumbnail`
-   * (asyar#460). TODO: switch to typed SDK calls once asyar-sdk ships them. */
+  /** Typed files proxy (SDK ≥4.1.0): `read` (asyar#456), `glob`/`thumbnail`
+   * (asyar#460). */
+  private files?: IFilesService;
+  /** Raw broker access for the one wire call the SDK still has no typed
+   * proxy for: `opener:open` behind the declared-scheme gate (asyar#457). */
   private invokeWire?: WireInvoke;
   /** True once a probe proved the file capabilities are usable — i.e. the
    * launcher is new enough AND the user consented to the file permissions. */
@@ -82,8 +83,8 @@ class SteamGamesExtension implements Extension {
     this.storage = ctx.getService<IStorageService>('storage');
     this.commands = ctx.getService<ICommandService>('commands');
 
-    const files = ctx.getService<IFilesService>('files');
-    const broker = (files as unknown as { broker?: { invoke: WireInvoke } })?.broker;
+    this.files = ctx.getService<IFilesService>('files');
+    const broker = (this.files as unknown as { broker?: { invoke: WireInvoke } })?.broker;
     if (broker) this.invokeWire = broker.invoke.bind(broker) as WireInvoke;
     await this.probeCapabilities();
 
@@ -129,12 +130,11 @@ class SteamGamesExtension implements Extension {
    * missing service method and resolve `undefined`; a pending/denied consent
    * rejects. Reindex re-probes on failure — consent can arrive late. */
   private async probeCapabilities(): Promise<void> {
-    if (!this.invokeWire) return;
+    if (!this.files) return;
     try {
-      const res = await this.invokeWire<unknown>('files:glob', {
-        pattern: steamVdfPath({ steamPath: this.steamPathPref() }),
-        opts: {},
-      });
+      const res: unknown = await this.files.glob(
+        steamVdfPath({ steamPath: this.steamPathPref() }),
+      );
       this.capsAvailable = Array.isArray(res);
     } catch {
       this.capsAvailable = false;
@@ -152,18 +152,17 @@ class SteamGamesExtension implements Extension {
    * evicts oldest-first, so URLs are re-requested at every registration and
    * NEVER persisted. Any failure falls back to the generic icon. */
   private async gameIcon(appid: string): Promise<string> {
-    if (!this.capsAvailable || !this.invokeWire) return FALLBACK_ICON;
+    if (!this.capsAvailable || !this.files) return FALLBACK_ICON;
     try {
       for (const pattern of iconGlobPatterns(appid, { steamPath: this.steamPathPref() })) {
-        const hits = await this.invokeWire<unknown>('files:glob', { pattern, opts: {} });
+        // `unknown` + runtime checks stay deliberate: a pre-#460 launcher
+        // resolves these wire calls to `undefined` despite the typed proxy.
+        const hits: unknown = await this.files.glob(pattern);
         if (!Array.isArray(hits) || hits.length === 0 || typeof hits[0] !== 'string') continue;
         if (hits.length > 1) {
           this.log?.info(`steamgames: ${hits.length} icon candidates for ${appid}, using first`);
         }
-        const url = await this.invokeWire<unknown>('files:thumbnail', {
-          path: hits[0],
-          opts: { maxDim: ICON_MAX_DIM },
-        });
+        const url: unknown = await this.files.thumbnail(hits[0], { maxDim: ICON_MAX_DIM });
         if (typeof url === 'string' && url) return url;
       }
     } catch (e) {
@@ -173,8 +172,8 @@ class SteamGamesExtension implements Extension {
   }
 
   private async readTextFile(path: string): Promise<string> {
-    if (!this.invokeWire) throw new Error('broker unavailable');
-    const res = await this.invokeWire<unknown>('files:read', { path, opts: {} });
+    if (!this.files) throw new Error('files service unavailable');
+    const res: unknown = await this.files.read(path);
     if (typeof res !== 'string') throw new Error('files:read not supported by this launcher');
     return res;
   }

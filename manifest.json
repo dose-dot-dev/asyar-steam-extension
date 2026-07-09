@@ -7,7 +7,7 @@
   "searchable": true,
   "icon": "🎮",
   "type": "extension",
-  "asyarSdk": "^4.0.0",
+  "asyarSdk": "^4.1.0",
   "permissions": [
     "storage:read",
     "storage:write",

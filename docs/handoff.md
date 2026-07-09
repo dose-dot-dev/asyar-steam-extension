@@ -3,10 +3,10 @@
 Warm-start notes for a fresh session. This captures the current state, architecture, and the
 hard-won platform gotchas so you don't have to re-derive them.
 
-- **Extension:** `dev.dose.steam` (Asyar SDK `4.0.0`, Windows target; **since v2.0.0 requires a
-  launcher newer than v0.1.1-34** — see the final "PowerShell removed" section, which supersedes
-  every PowerShell/dual-mode description below. Migrated from SDK 3.1.1 on 2026-07-06 — version-pin
-  bump only, zero code changes. Renamed from `com.geodose.steamgames` on 2026-07-08).
+- **Extension:** `dev.dose.steam` (Asyar SDK `4.1.0`, Windows target; **since v2.0.0 requires
+  launcher ≥ v0.1.1-35**, enforced via `asyarSdk: ^4.1.0` — see the final "SDK 4.1.0" section,
+  which supersedes every PowerShell/dual-mode description below. Migrated from SDK 3.1.1 on
+  2026-07-06 and to 4.1.0 on 2026-07-09. Renamed from `com.geodose.steamgames` on 2026-07-08).
 - **Repo:** <https://github.com/dose-dot-dev/asyar-steam-extension>.
 - **Dev location:** `%USERPROFILE%\Desktop\dev\dev.dose.steam` on the Windows filesystem
   (worked on via WSL at the corresponding `/mnt/c/...` path; the folder name must exactly match the id).
@@ -267,9 +267,31 @@ What remains, and the shape it has now:
   asyar-sdk 4.0.0 predates every one of these APIs (launcher main's SDK source has typed
   `files` proxies now, but no new npm release yet). Switch when one ships.
 
-**Launcher floor / Store consequence:** the newest *released* launcher (v0.1.1-34, 2026-07-06)
-predates all four PRs, so v2.0.0 only works on a dev build of main ≥ `82954f14`. The
-maintainer-invited Store publication (`asyar publish`, first third-party extension) must wait
-for the first launcher release containing #460. There is no manifest field for a launcher
-version floor — the SDK pin (`^4.0.0`) does not express it — so a too-old launcher loads the
-extension and it simply stays inert (plus the log line "file capabilities unavailable").
+**Launcher floor / Store consequence (as written 2026-07-08, superseded next section):** the
+newest *released* launcher (v0.1.1-34, 2026-07-06) predates all four PRs, so v2.0.0 only works
+on a dev build of main ≥ `82954f14`. The maintainer-invited Store publication (`asyar publish`,
+first third-party extension) must wait for the first launcher release containing #460. There is
+no manifest field for a launcher version floor — the SDK pin (`^4.0.0`) does not express it —
+so a too-old launcher loads the extension and it simply stays inert (plus the log line "file
+capabilities unavailable").
+
+## SDK 4.1.0 / launcher v0.1.1-35 (2026-07-09): floor expressible, publication unblocked
+
+Launcher **v0.1.1-35** shipped 2026-07-09 together with **asyar-sdk 4.1.0** on npm — the first
+release containing #455/#456/#457/#460 (and our #464 sync fix). Changes made the same day:
+
+- **Dep bumped to `asyar-sdk@^4.1.0`** and the three `files:*` calls migrated from `invokeWire`
+  to the typed `IFilesService` proxy (`read`/`glob`/`thumbnail` — new in 4.1.0). Only
+  `opener:open` remains on the raw broker (no typed opener proxy yet). The runtime `unknown`
+  checks on files results were kept deliberately: a pre-#460 launcher resolves those wire types
+  to `undefined` no matter what the proxy types claim.
+- **The launcher floor is now expressible:** the manifest declares `asyarSdk: ^4.1.0`, and since
+  the launcher embeds its workspace SDK version (`SUPPORTED_SDK_VERSION` = 4.1.0 in v0.1.1-35,
+  4.0.0 in v0.1.1-34), the compat gate in `discovery.rs` now rejects the extension on pre-#460
+  launchers outright instead of loading it inert. The probe still covers the consent-pending
+  case on new-enough launchers.
+- **Verified against the installed v0.1.1-35** (2026-07-09): worker initialized, probe passed,
+  full crawl via typed `files.read` (fingerprint unchanged → cache correctly kept), 32/32 games
+  re-registered with real `asyar-thumb://` icons.
+- Store publication is unblocked; `asyar publish` (4.1.0 CLI, `--dry-run` supported) is the
+  next step.

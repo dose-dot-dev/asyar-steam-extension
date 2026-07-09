@@ -17,7 +17,7 @@
     "package": "npm run build && zip -r extension.zip dist manifest.json"
   },
   "dependencies": {
-    "asyar-sdk": "^4.0.0"
+    "asyar-sdk": "^4.1.0"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
