@@ -295,3 +295,21 @@ release containing #455/#456/#457/#460 (and our #464 sync fix). Changes made the
   re-registered with real `asyar-thumb://` icons.
 - Store publication is unblocked; `asyar publish` (4.1.0 CLI, `--dry-run` supported) is the
   next step.
+
+**Publish walkthrough findings (2026-07-09, filed upstream — publish paused on #473):**
+`asyar publish --dry-run` surfaced three pipeline problems, reported as
+[asyar#473](https://github.com/Xoshbin/asyar/issues/473) (both OAuth steps — store login AND
+CLI device flow — request the full `repo` scope; the store also reads private emails via
+`user:email`; user declined both grants, so publication waits on scope fixes or the
+fine-grained-PAT workaround) and [asyar#474](https://github.com/Xoshbin/asyar/issues/474)
+(worker-only extensions can never pass `verifyBuildOutput` — no `view.html` case — plus
+`publish.ts` forgets the manifest argument; and `exec('start "<url>"')` opens a titled cmd
+window instead of a browser). The first two are patched locally in
+`node_modules/asyar-sdk/dist/cli/` (marked `PATCHED LOCALLY`; wiped by any `npm install`).
+Known-good workaround if the maintainer stalls: seed Windows Credential Manager (`asyar-cli`
+service) with a dummy store token for dry-run + a fine-grained PAT (Contents RW on this repo
+only) as `github-token`, and pre-create the GitHub release with `gh` — the CLI resumes from
+store submission when the release already exists. Only the final store submission truly needs
+a real store token. Packaging non-issue verified: the zip flattens `dist/` into the root, but
+the launcher's `uri_schemes.rs` resolves both `dist/<file>` and `<file>`, and
+`background.main`'s value is presence-checked only.
