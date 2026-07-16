@@ -17,10 +17,10 @@ import type {
   DynamicCommandRegistration,
   Extension,
   ExtensionContext,
+  IFeedbackService,
   ICommandService,
   IFilesService,
   ILogService,
-  INotificationService,
   IStorageService,
 } from 'asyar-sdk/contracts';
 
@@ -57,7 +57,7 @@ interface CacheShape {
 class SteamGamesExtension implements Extension {
   private ctx?: ExtensionContext;
   private log?: ILogService;
-  private notifications?: INotificationService;
+  private feedback?: IFeedbackService;
   private storage?: IStorageService;
   private commands?: ICommandService;
 
@@ -79,7 +79,7 @@ class SteamGamesExtension implements Extension {
   async initialize(ctx: ExtensionContext): Promise<void> {
     this.ctx = ctx;
     this.log = ctx.getService<ILogService>('log');
-    this.notifications = ctx.getService<INotificationService>('notifications');
+    this.feedback = ctx.getService<IFeedbackService>('feedback');
     this.storage = ctx.getService<IStorageService>('storage');
     this.commands = ctx.getService<ICommandService>('commands');
 
@@ -232,8 +232,8 @@ class SteamGamesExtension implements Extension {
       this.log?.info(`steamgames: indexed ${games.length} games`);
 
       const changed = games.length !== previous;
-      if (this.notifications && (force || (changed && this.notifyPref()))) {
-        await this.notifications.send({
+      if (this.feedback && (force || (changed && this.notifyPref()))) {
+        await this.feedback.sendBackground({
           title: 'Steam',
           body: `Indexed ${games.length} installed game${games.length === 1 ? '' : 's'}.`,
         });
